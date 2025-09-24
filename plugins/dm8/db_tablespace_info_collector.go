@@ -47,26 +47,21 @@ func (c *TableSpaceInfoCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *TableSpaceInfoCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
 
 	//保存全局结果对象，可以用来做缓存以及序列化
 	var tablespaceInfos []TableSpaceInfo
 
-	// 从缓存中获取数据
-	if cachedJSON, found := GetFromCache(dmdbms_tablespace_size_total_info); found {
+	// 从缓存中获取数据，使用带数据源的缓存键
+	cacheKey := dmdbms_tablespace_size_total_info
+	if cachedJSON, found := GetFromCache(cacheKey); found {
 		// 将缓存中的 JSON 字符串转换为 TablespaceInfo 切片
 		if err := json.Unmarshal([]byte(cachedJSON), &tablespaceInfos); err != nil {
 			// 处理反序列化错误
-			logger.Errorf("Error unmarshaling cached data", err)
+			logger.Errorf("Error unmarshaling cached data has error: %s ", err)
 			// 反序列化失败，忽略缓存中的数据，继续查询数据库
 			cachedJSON = "" // 清空缓存数据，确保后续不使用过期或损坏的数据
 		} else {
-			logger.Infof("Use cache TablespaceInfo data")
+			//logger.Infof("Use cache TablespaceInfo data")
 			// 使用缓存的数据
 			for _, info := range tablespaceInfos {
 				ch <- prometheus.MustNewConstMetric(c.totalDesc, prometheus.GaugeValue, info.TotalSize, Hostname, info.TablespaceName)
@@ -76,17 +71,12 @@ func (c *TableSpaceInfoCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryTablespaceInfoSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryTablespaceInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -94,13 +84,13 @@ func (c *TableSpaceInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info TableSpaceInfo
 		if err := rows.Scan(&info.TablespaceName, &info.TotalSize, &info.FreeSize); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("Error scanning row has error: %s", err)
 			continue
 		}
 		tablespaceInfos = append(tablespaceInfos, info)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s", err)
 	}
 	// 发送数据到 Prometheus
 	for _, info := range tablespaceInfos {
@@ -112,10 +102,11 @@ func (c *TableSpaceInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	valueJSON, err := json.Marshal(tablespaceInfos)
 	if err != nil {
 		// 处理序列化错误
-		logger.Errorf("TablespaceInfo ", err)
+		logger.Errorf("TablespaceInfo marshal error: %s", err)
 		return
 	}
-	// 将查询结果存入缓存
-	SetCache(dmdbms_tablespace_size_total_info, string(valueJSON), c.config.AlarmKeyCacheTime) // 设置缓存有效时间为5分钟
+	// 将查询结果存入缓存，重用之前定义的cacheKey
+	SetCache(cacheKey, string(valueJSON), time.Minute*c.config.BigKeyDataCacheTime)
+	//	logger.Infof("TablespaceFileInfo exec finish")
 
 }

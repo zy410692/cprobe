@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/cprobe/cprobe/lib/logger"
-	"github.com/prometheus/client_golang/prometheus"
 	"strconv"
 	"time"
+
+	"github.com/cprobe/cprobe/lib/logger"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // 定义数据结构
@@ -40,24 +41,13 @@ func (c *DbLicenseCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DbLicenseCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryDbGrantInfoSql)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryDbGrantInfoSql, err)
 		return
 	}
 	defer rows.Close()
@@ -66,13 +56,13 @@ func (c *DbLicenseCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info DbLicenseInfo
 		if err := rows.Scan(&info.ExpiredDate); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryDbGrantInfoSql] Error scanning row has error: %s", err)
 			continue
 		}
 		licenseInfos = append(licenseInfos, info)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("[QueryDbGrantInfoSql] Error with rows has error: %s", err)
 		return
 	}
 
@@ -84,13 +74,13 @@ func (c *DbLicenseCollector) Collect(ch chan<- prometheus.Metric) {
 		if expiredDateStr != "" {
 			expiredDate, err := time.Parse("20060102", expiredDateStr)
 			if err != nil {
-				logger.Errorf("Error parsing date", err)
+				logger.Errorf("Error parsing date has error: %s", err)
 				continue
 			}
 			betweenDay := expiredDate.Sub(time.Now()).Hours() / 24
 			returnDateStr = fmt.Sprintf("%.0f", betweenDay)
 			licenseStatus = returnDateStr
-			logger.Infof("Check Database License Date Info Success, betweenDay is %s day", returnDateStr)
+			//logger.Infof(" Check Database License Date Info Success, betweenDay is %s day", returnDateStr)
 		} else {
 			licenseStatus = "无限制"
 			returnDateStr = "-1"

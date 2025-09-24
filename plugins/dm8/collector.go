@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/cprobe/cprobe/lib/logger"
-	"github.com/prometheus/client_golang/prometheus"
 	"strings"
 	"sync"
+
+	"github.com/cprobe/cprobe/lib/logger"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -38,24 +39,47 @@ const (
 
 	dmdbms_joblog_error_num string = "dmdbms_joblog_error_num"
 
-	dmdbms_slow_sql_info            string = "dmdbms_slow_sql_info"
-	dmdbms_monitor_info             string = "dmdbms_monitor_info"
-	dmdbms_statement_type_info      string = "dmdbms_statement_type_info"
-	dmdbms_parameter_info           string = "dmdbms_parameter_info"
-	dmdbms_user_list_info           string = "dmdbms_user_list_info"
-	dmdbms_license_date             string = "dmdbms_license_date"
-	dmdbms_version                  string = "dmdbms_version"
-	dmdbms_arch_status              string = "dmdbms_arch_status"
-	dmdbms_start_day                string = "dmdbms_start_day"
-	dmdbms_rapply_sys_task_mem_used string = "dmdbms_rapply_sys_task_mem_used"
-	dmdbms_rapply_sys_task_num      string = "dmdbms_rapply_sys_task_num"
-	dmdbms_instance_log_error_info  string = "dmdbms_instance_log_error_info"
+	dmdbms_slow_sql_info                string = "dmdbms_slow_sql_info"
+	dmdbms_monitor_info                 string = "dmdbms_monitor_info"
+	dmdbms_statement_type_info          string = "dmdbms_statement_type_info"
+	dmdbms_parameter_info               string = "dmdbms_parameter_info"
+	dmdbms_user_list_info               string = "dmdbms_user_list_info"
+	dmdbms_license_date                 string = "dmdbms_license_date"
+	dmdbms_version                      string = "dmdbms_version"
+	dmdbms_arch_switch_rate             string = "dmdbms_arch_switch_rate"
+	dmdbms_arch_switch_rate_detail_info string = "dmdbms_arch_switch_rate_detail_info"
+	dmdbms_arch_status_info             string = "dmdbms_arch_status_info"
+	dmdbms_arch_status                  string = "dmdbms_arch_status"
+	dmdbms_arch_send_detail_info        string = "dmdbms_arch_send_detail_info"
+	dmdbms_arch_send_diff_value         string = "dmdbms_arch_send_diff_value"
+	dmdbms_start_day                    string = "dmdbms_start_day"
+	dmdbms_rapply_sys_task_mem_used     string = "dmdbms_rapply_sys_task_mem_used"
+	dmdbms_rapply_sys_task_num          string = "dmdbms_rapply_sys_task_num"
+	dmdbms_instance_log_error_info      string = "dmdbms_instance_log_error_info"
 
 	dmdbms_dmap_process_is_exit      string = "dmdbms_dmap_process_is_exit"
 	dmdbms_dmserver_process_is_exit  string = "dmdbms_dmserver_process_is_exit"
 	dmdbms_dmwatcher_process_is_exit string = "dmdbms_dmwatcher_process_is_exit"
 	dmdbms_dmmonitor_process_is_exit string = "dmdbms_dmmonitor_process_is_exit"
 	dmdbms_dmagent_process_is_exit   string = "dmdbms_dmagent_process_is_exit"
+
+	//DM缓冲池的命中率
+	dmdbms_bufferpool_info string = "dmdbms_bufferpool_info"
+	// 数据字典缓存指标
+	dmdbms_dict_cache_total string = "dmdbms_dict_cache_total"
+	//DM的dual
+	dmdbms_dual_info string = "dmdbms_dual_info"
+	//DW守护进程的状态
+	dmdbms_dw_watcher_info string = "dmdbms_dw_watcher_info"
+	//回滚段信息
+	dmdbms_purge_objects_info   string = "dmdbms_purge_objects_info"
+	dmdbms_rapply_time_diff     string = "dmdbms_rapply_time_diff"
+	dmdbms_statement_type_total string = "dmdbms_statement_type_total"
+
+	// 系统信息指标
+	dmdbms_system_cpu_info    string = "dmdbms_system_cpu_info"
+	dmdbms_system_memory_info string = "dmdbms_system_memory_info"
+	dmdbms_system_base_info   string = "dmdbms_system_base_info"
 )
 
 // MetricCollector 接口
@@ -68,10 +92,10 @@ func RegisterCollectors(config *Config) *prometheus.Registry {
 	registerMux.Lock()
 	defer registerMux.Unlock()
 	reg := prometheus.NewRegistry()
-	logger.Infof("exporter running system is %v", GetOS())
+	//logger.Infof("exporter running system is %v", GetOS())
 
 	collectors := make([]prometheus.Collector, 0)
-	collectors = append(collectors, NewSystemInfoCollector())
+	collectors = append(collectors, NewDBSystemInfoCollector(DBPool, config))
 
 	if config.RegisterHostMetrics && strings.Compare(GetOS(), OS_LINUX) == 0 {
 		collectors = append(collectors, NewDmapProcessCollector(DBPool, config))
@@ -95,6 +119,14 @@ func RegisterCollectors(config *Config) *prometheus.Registry {
 		collectors = append(collectors, NewDbRapplySysCollector(DBPool, config))
 		collectors = append(collectors, NewInstanceLogErrorCollector(DBPool, config))
 		collectors = append(collectors, NewCkptCollector(DBPool, config))
+		collectors = append(collectors, NewDbArchSendCollector(DBPool, config))
+		collectors = append(collectors, NewDbArchSwitchCollector(DBPool, config))
+		collectors = append(collectors, NewDbBufferPoolCollector(DBPool, config))
+		collectors = append(collectors, NewDbDictCacheCollector(DBPool, config))
+		collectors = append(collectors, NewDbDualCollector(DBPool, config))
+		collectors = append(collectors, NewDbDwWatcherInfoCollector(DBPool, config))
+		collectors = append(collectors, NewPurgeCollector(DBPool, config))
+		collectors = append(collectors, NewDbRapplyTimeDiffCollector(DBPool, config))
 
 	}
 	if config.RegisterDmhsMetrics {
@@ -121,5 +153,13 @@ func handleDbQueryError(err error) {
 		logger.Errorf("Query timed out %v", err)
 	} else {
 		logger.Errorf("Error querying database %v", err)
+	}
+}
+
+func handleDbQueryErrorWithSQL(sql string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		logger.Errorf("Query SQL timed out SQL:%s ,error: %v", sql, err)
+	} else {
+		logger.Errorf("Error querying database SQL:%s ,error: %v", sql, err)
 	}
 }

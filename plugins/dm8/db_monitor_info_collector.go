@@ -3,15 +3,15 @@ package dm8
 import (
 	"context"
 	"database/sql"
+	"sync"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"strings"
-	"time"
 )
 
 // 定义数据结构
 type MonitorInfo struct {
-	DwConnTime sql.NullTime
+	DwConnTime sql.NullString
 	MonConfirm sql.NullString
 	MonId      sql.NullString
 	MonIp      sql.NullString
@@ -24,9 +24,37 @@ type MonitorInfoCollector struct {
 	db              *sql.DB
 	monitorInfoDesc *prometheus.Desc
 	viewExists      bool
-	config          *Config
+
+	// 每个实例独立的视图检查缓存
+	viewCheckOnce sync.Once
+	viewChecked   bool
+	config        *Config
 }
 
+// checkDmMonitorExists 检查V$DMMONITOR视图是否存在
+// 使用sync.Once确保每个数据源只检查一次
+func (c *MonitorInfoCollector) checkDmMonitorExists(ctx context.Context) bool {
+	c.viewCheckOnce.Do(func() {
+		const query = "SELECT COUNT(1) FROM V$DYNAMIC_TABLES WHERE NAME = 'V$DMMONITOR'"
+		var count int
+		if err := c.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			logger.Warnf(" Failed to check V$DMMONITOR existence: %v", err)
+			c.viewChecked = false
+			return
+		}
+		c.viewChecked = count == 1
+		//logger.Infof("V$DMMONITOR exists: %v", c.viewChecked)
+	})
+	return c.viewChecked
+}
+
+// NewMonitorInfoCollector 创建一个新的监控信息收集器
+// 初始化收集器并设置监控指标的描述信息
+// 参数:
+//   - db: 数据库连接
+//
+// 返回值:
+//   - MetricCollector: 实现了MetricCollector接口的收集器实例
 func NewMonitorInfoCollector(db *sql.DB, config *Config) MetricCollector {
 	return &MonitorInfoCollector{
 		db:     db,
@@ -46,33 +74,18 @@ func (c *MonitorInfoCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *MonitorInfoCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
-	//不存在则直接返回
-	if !c.viewExists {
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
+	// 检查视图是否存在
+	if !c.checkDmMonitorExists(ctx) {
+		return
+	}
+
 	rows, err := c.db.QueryContext(ctx, QueryMonitorInfoSqlStr)
 	if err != nil {
-		if strings.EqualFold(err.Error(), "v$dmmonitor") { // 检查视图不存在的特定错误
-			logger.Warnf("v$dmmonitor view does not exist, skipping future queries", err)
-			c.viewExists = false
-			return
-		}
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryMonitorInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -81,19 +94,18 @@ func (c *MonitorInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info MonitorInfo
 		if err := rows.Scan(&info.DwConnTime, &info.MonConfirm, &info.MonId, &info.MonIp, &info.MonVersion, &info.Mid); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("Error scanning row has error: %s", err)
 			continue
 		}
 		monitorInfos = append(monitorInfos, info)
 	}
 
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s", err)
 	}
 	// 发送数据到 Prometheus
 	for _, info := range monitorInfos {
-		hostName := Hostname
-		dwConnTime := NullTimeToString(info.DwConnTime)
+		dwConnTime := NullStringToString(info.DwConnTime)
 		monConfirm := NullStringToString(info.MonConfirm)
 		monId := NullStringToString(info.MonId)
 		monIp := NullStringToString(info.MonIp)
@@ -103,7 +115,7 @@ func (c *MonitorInfoCollector) Collect(ch chan<- prometheus.Metric) {
 			c.monitorInfoDesc,
 			prometheus.GaugeValue,
 			NullFloat64ToFloat64(info.Mid),
-			hostName, dwConnTime, monConfirm, monId, monIp, monVersion,
+			Hostname, dwConnTime, monConfirm, monId, monIp, monVersion,
 		)
 	}
 }

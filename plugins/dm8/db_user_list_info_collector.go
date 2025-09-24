@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 // 定义数据结构
@@ -45,24 +44,13 @@ func (c *DbUserCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DbUserCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryUserInfoSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryUserInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -71,18 +59,17 @@ func (c *DbUserCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info UserInfo
 		if err := rows.Scan(&info.Username, &info.ReadOnly, &info.AccountStatus, &info.ExpiryDate, &info.ExpiryDateDay, &info.DefaultTablespace, &info.Profile, &info.CreateTime); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("Error scanning row has error: %s", err)
 			continue
 		}
 		userInfos = append(userInfos, info)
 	}
 
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s ", err)
 		return
 	}
 
-	hostname := Hostname
 	// 发送数据到 Prometheus
 	for _, info := range userInfos {
 		username := NullStringToString(info.Username)
@@ -103,7 +90,7 @@ func (c *DbUserCollector) Collect(ch chan<- prometheus.Metric) {
 			c.userListInfoDesc,
 			prometheus.GaugeValue,
 			accountStatusValue,
-			hostname, username, readOnly, expiryDate, expiryDateDay, defaultTablespace, profile, createTime,
+			Hostname, username, readOnly, expiryDate, expiryDateDay, defaultTablespace, profile, createTime,
 		)
 	}
 }

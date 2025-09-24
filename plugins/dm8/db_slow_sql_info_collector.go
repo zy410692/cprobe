@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 type SessionInfoCollector struct {
@@ -47,24 +46,19 @@ func (c *SessionInfoCollector) Collect(ch chan<- prometheus.Metric) {
 		logger.Infof("CheckSlowSQL is false, skip collecting slow SQL info")
 		return
 	}
-	funcStart := time.Now()
+	//funcStart := time.Now()
 	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
+	//defer func() {
+	//	duration := time.Since(funcStart)
+	//	logger.Infof("func exec time：%vms", duration.Milliseconds())
+	//}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryDbSlowSqlInfoSqlStr, c.config.SlowSqlTime, c.config.SlowSqlMaxRows)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryDbSlowSqlInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -73,18 +67,17 @@ func (c *SessionInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info SessionInfo
 		if err := rows.Scan(&info.ExecTime, &info.SlowSQL, &info.SessID, &info.CurrSch, &info.ThrdID, &info.LastRecvTime, &info.ConnIP); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryDbSlowSqlInfoSqlStr] Error scanning row has error: %s", err)
 			continue
 		}
 		sessionInfos = append(sessionInfos, info)
 	}
 
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error:%s", err)
 	}
 	// 发送数据到 Prometheus
 	for _, info := range sessionInfos {
-		hostName := Hostname
 		sessionID := NullStringToString(info.SessID)
 		currentSchema := NullStringToString(info.CurrSch)
 		threadID := NullStringToString(info.ThrdID)
@@ -96,7 +89,7 @@ func (c *SessionInfoCollector) Collect(ch chan<- prometheus.Metric) {
 			c.slowSQLInfoDesc,
 			prometheus.GaugeValue,
 			NullFloat64ToFloat64(info.ExecTime),
-			hostName, sessionID, currentSchema, threadID, lastRecvTime, connIP, slowSQL,
+			Hostname, sessionID, currentSchema, threadID, lastRecvTime, connIP, slowSQL,
 		)
 	}
 }

@@ -10,11 +10,10 @@ const (
                (SELECT COUNT(*) FROM V$LOCK WHERE BLOCKED=1) DEADLOCKNUM,
                (SELECT COUNT(*) FROM V$THREADS) THREADSNUM,
                DATEDIFF(SQL_TSI_DAY,START_TIME,sysdate) DBSTARTDAY
-        
         FROM V$INSTANCE`
 
 	//表空间的使用率
-	QueryTablespaceInfoSqlStr = `SELECT /*+DAMENG_EXPORTER*/ F.TABLESPACE_NAME,F.FREE_SPACE   AS "FREE_SIZE",T.TOTAL_SPACE   "TOTAL_SIZE"
+	QueryTablespaceInfoSqlStr = `SELECT /*+DAMENG_EXPORTER*/ F.TABLESPACE_NAME,T.TOTAL_SPACE   "TOTAL_SIZE",F.FREE_SPACE   AS "FREE_SIZE"
 FROM (
 SELECT TABLESPACE_NAME, ROUND(SUM(BLOCKS * (SELECT PARA_VALUE / 1024 FROM V$DM_INI WHERE PARA_NAME = 'GLOBAL_PAGE_SIZE') / 1024)) FREE_SPACE
         FROM DBA_FREE_SPACE
@@ -35,10 +34,34 @@ WHERE F.TABLESPACE_NAME = T.TABLESPACE_NAME`
     FROM V$DATAFILE;`
 
 	//查询内存池的状态
-	QueryMemoryPoolInfoSqlStr = `SELECT /*+DM_EXPORTER*/ ZONE_TYPE,CURR_VAL,RES_VAL,TOTAL_VAL FROM (
- SELECT 'HJ ZONE' AS ZONE_TYPE,(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (114,115)) AS CURR_VAL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (145)) AS RES_VAL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (144)) AS TOTAL_VAL FROM DUAL UNION ALL
- SELECT 'HAGR ZONE',(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (116)),(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (143)),(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (142)) FROM DUAL UNION ALL
- SELECT 'SORT ZONE',(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (178)),NULL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (177)) FROM DUAL)`
+	//QueryMemoryPoolInfoSqlStr = `SELECT /*+DM_EXPORTER*/ ZONE_TYPE,CURR_VAL,RES_VAL,TOTAL_VAL FROM (
+	//SELECT 'HJ ZONE' AS ZONE_TYPE,(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (114,115)) AS CURR_VAL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (145)) AS RES_VAL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (144)) AS TOTAL_VAL FROM DUAL UNION ALL
+	//SELECT 'HAGR ZONE',(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (116)),(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (143)),(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (142)) FROM DUAL UNION ALL
+	//SELECT 'SORT ZONE',(SELECT SUM(STAT_VAL) FROM V$SYSSTAT WHERE ID IN (178)),NULL,(SELECT STAT_VAL FROM V$SYSSTAT WHERE ID IN (177)) FROM DUAL)`
+
+	//查询内存池的状态
+	QueryMemoryPoolInfoSqlStr = `WITH stat_values AS (
+    SELECT 
+        SUM(CASE WHEN ID IN (114, 115) THEN STAT_VAL END) AS hj_curr_val,
+        MAX(CASE WHEN ID = 145 THEN STAT_VAL END) AS hj_res_val,
+        MAX(CASE WHEN ID = 144 THEN STAT_VAL END) AS hj_total_val,
+        SUM(CASE WHEN ID = 116 THEN STAT_VAL END) AS hagr_curr_val,
+        MAX(CASE WHEN ID = 143 THEN STAT_VAL END) AS hagr_res_val,
+        MAX(CASE WHEN ID = 142 THEN STAT_VAL END) AS hagr_total_val,
+        SUM(CASE WHEN ID = 178 THEN STAT_VAL END) AS sort_curr_val,
+        MAX(CASE WHEN ID = 177 THEN STAT_VAL END) AS sort_total_val
+    FROM V$SYSSTAT 
+    WHERE ID IN (114, 115, 116, 142, 143, 144, 145, 177, 178)
+)
+SELECT /*+DM_EXPORTER*/ ZONE_TYPE, CURR_VAL, RES_VAL, TOTAL_VAL
+FROM (
+    SELECT 'HJ ZONE' AS ZONE_TYPE, hj_curr_val AS CURR_VAL, hj_res_val AS RES_VAL, hj_total_val AS TOTAL_VAL FROM stat_values
+    UNION ALL
+    SELECT 'HAGR ZONE' AS ZONE_TYPE, hagr_curr_val AS CURR_VAL, hagr_res_val AS RES_VAL, hagr_total_val AS TOTAL_VAL FROM stat_values
+    UNION ALL
+    SELECT 'SORT ZONE' AS ZONE_TYPE, sort_curr_val AS CURR_VAL, NULL AS RES_VAL, sort_total_val AS TOTAL_VAL FROM stat_values
+)
+`
 
 	//查询数据库的会话状态
 	QueryDBSessionsStatusSqlStr = `SELECT /*+DM_EXPORTER*/
@@ -81,9 +104,9 @@ GROUP BY
 	//查询监视器信息
 	QueryMonitorInfoSqlStr = `select /*+DM_EXPORTER*/ * from v$dmmonitor`
 	//查询数据库的语句执行次数
-	QuerySqlExecuteCountSqlStr = `select /*+DM_EXPORTER*/  NAME,STAT_VAL from v$sysstat where name in ('select statements','insert statements','delete statements','update statements','ddl statements','transaction total count','select statements in pl/sql','insert statements in pl/sql','delete statements in pl/sql','update statements in pl/sql','DDL in pl/sql count','dynamic exec in pl/sql')`
+	QuerySqlExecuteCountSqlStr = `select /*+DM_EXPORTER*/  NAME,STAT_VAL from v$sysstat where name in ('select statements','insert statements','delete statements','update statements','ddl statements','transaction total count','select statements in pl/sql','insert statements in pl/sql','delete statements in pl/sql','update statements in pl/sql','DDL in pl/sql count','dynamic exec in pl/sql','DB time(ms)','parse time(ms)','hard parse time(ms)','latch wait time(ms)','mutex wait time(ms)','io wait time(ms)','trx lock wait time(ms)','redo sync wait time(ms)','redo sync wait time for commit(ms)','parse count','parser errors','hard parse count','plan total count','plan cache hit count','logic read count','recycle logic read count','physical read count','physical multi read count','physical write count')`
 	//查询数据库参数
-	QueryParameterInfoSql = `select /*+DM_EXPORTER*/ para_name,para_value from v$dm_ini where para_name in  ( 'MAX_SESSIONS','REDOS_BUF_NUM','REDOS_BUF_SIZE')`
+	QueryParameterInfoSql = `select /*+DM_EXPORTER*/ para_name,para_value from v$dm_ini where para_name in  ( 'MAX_SESSIONS','REDOS_BUF_NUM','REDOS_BUF_SIZE','PORT_NUM')`
 	//查询检查点信息
 	QueryCheckPointInfoSql = `select /*+DM_EXPORTER*/ CKPT_TOTAL_COUNT,CKPT_RESERVE_COUNT,CKPT_FLUSHED_PAGES,CKPT_TIME_USED from V$CKPT`
 	//查询用户信息
@@ -104,4 +127,53 @@ GROUP BY
 	QueryDbGrantInfoSql = `SELECT /*+DM_EXPORTER*/ CASE WHEN expired_date IS NULL THEN '' ELSE TO_CHAR(expired_date, 'yyyyMMdd')  END AS expired_date FROM V$LICENSE`
 	//查询主备库的同步堆积信息
 	QueryStandbyInfoSql = `SELECT /*+DM_EXPORTER*/ task_mem_used, task_num FROM v$rapply_sys`
+
+	QueryArchiveSendStatusSql = `select /*+DMDB_CHECK_FLAG*/ case ARCH_STATUS when 'VALID' then 1 when 'INVALID' then 0 end ARCH_STATUS,ARCH_TYPE,ARCH_DEST,ARCH_SRC from v$arch_status`
+
+	//归档信息LSN详情
+	QueryArchSendDetailInfo = `SELECT /*+DM_EXPORTER*/ ARCH_DEST,ARCH_TYPE,(MAX_SEND_LSN - LAST_SEND_LSN) AS LSN_DIFFERENCE,LAST_SEND_CODE,LAST_SEND_DESC,TO_CHAR(LAST_START_TIME,'YYYY-MM-DD HH24:MI:SS') AS LAST_START_TIME,TO_CHAR(LAST_END_TIME,'YYYY-MM-DD HH24:MI:SS') AS LAST_END_TIME,LAST_SEND_TIME FROM V$ARCH_SEND_INFO`
+
+	QueryArchSendDetailInfo2 = `SELECT  /*+DM_EXPORTER*/ 
+   ARCH_DEST,  ARCH_TYPE, 
+   CASE  WHEN EXISTS ( SELECT 1  FROM V$ARCH_APPLY_INFO  WHERE V$ARCH_SEND_INFO.ARCH_DEST = V$ARCH_APPLY_INFO.DEST_NAME ) THEN  MAX_SEND_LSN - ( SELECT RPKG_LSN  FROM V$ARCH_APPLY_INFO  WHERE V$ARCH_SEND_INFO.ARCH_DEST = V$ARCH_APPLY_INFO.DEST_NAME )  ELSE 0 END AS LSN_DIFFERENCE, 
+       LAST_SEND_CODE, 
+       LAST_SEND_DESC, 
+       TO_CHAR(LAST_START_TIME,'YYYY-MM-DD HH24:MI:SS') AS LAST_START_TIME, 
+       TO_CHAR(LAST_END_TIME,'YYYY-MM-DD HH24:MI:SS') AS LAST_END_TIME, 
+       LAST_SEND_TIME 
+  FROM V$ARCH_SEND_INFO;`
+	// 检查视图和字段是否存在的SQL
+	// 检查V$ARCH_APPLY_INFO视图是否存在
+	QueryArchApplyInfoExists = "SELECT COUNT(1) FROM V$DYNAMIC_TABLES WHERE NAME = 'V$ARCH_APPLY_INFO'"
+
+	//计算归档的切换频率
+	QueryArchiveSwitchRateSql = `SELECT /*+DM_EXPORTER*/ STATUS,TO_CHAR(CREATE_TIME,'YYYY-MM-DD HH24:MI:SS') AS CREATE_TIME,PATH,CLSN,SRC_DB_MAGIC,DATEDIFF(MINUTE,LEAD(CREATE_TIME) OVER (ORDER BY create_time desc) ,create_time) MINUS_DIFF FROM V$ARCH_FILE order by create_time desc LIMIT 1;`
+	//查询缓冲池命中率（Fast）
+	QueryBufferPoolHitRateInfoSql = `SELECT /*+DM_EXPORTER*/ NAME,ROUND(SUM(RAT_HIT) /COUNT(*),4) HIT_RATE FROM V$BUFFERPOOL WHERE NAME ='FAST' GROUP BY NAME;`
+	//查询dual表
+	QueryDualInfoSql = `SELECT /*+DM_EXPORTER*/ 1 FROM DUAL;`
+	//查询守护进程的状态信息
+	QueryDwWatcherInfoSql = `SELECT /*+DMDB_CHECK_FLAG*/ WATCHER.DW_MODE,WATCHER.DW_STATUS,WATCHER.AUTO_RESTART,CASE WATCHER.DW_STATUS WHEN 'OPEN' THEN '1' WHEN 'MOUNT' THEN '2' WHEN 'SUSPEND' THEN '3' ELSE '4' END AS DW_STATUS_TO_NUM FROM V$DMWATCHER WATCHER LEFT JOIN  V$INSTANCE INSTANCE ON INSTANCE.INSTANCE_NAME = WATCHER.INST_NAME;`
+	//查询实例的异常日志(近5分钟内)
+	QueryInstanceErrorLogSql = `SELECT /*+DM_EXPORTER*/ TO_CHAR(LOG_TIME,'YYYY-MM-DD HH24:MI:SS') AS LOG_TIME,PID,LEVEL$ AS LEVEL,TXT FROM V$INSTANCE_LOG_HISTORY WHERE DATEDIFF(MINUTE, LOG_TIME, GETDATE()) <= 5 AND LEVEL$ NOT IN ('INFO','WARN') ORDER BY SEQNO DESC;`
+	// 回滚段查询
+	QueryPurgeInfoSqlStr = `SELECT /*+DAMENG_EXPORTER*/ OBJ_NUM,IS_RUNNING,PURG_FOR_TS from V$PURGE`
+	// 备库的同步延迟监控
+	QueryRapplyTimeDiffSql = `SELECT /*+DM_EXPORTER*/ NVL(TIMESTAMPDIFF(SQL_TSI_SECOND, APPLY_CMT_TIME, LAST_CMT_TIME), 0) TIMEDIFF FROM V$RAPPLY_STAT`
+
+	// 系统信息查询（合并的完整查询，包含CPU、物理内存、虚拟内存、磁盘大小）
+	QuerySystemInfoSqlStr = `SELECT /*+DAMENG_EXPORTER*/ N_CPU,TOTAL_PHY_SIZE,TOTAL_VIR_SIZE,TOTAL_DISK_SIZE FROM V$SYSTEMINFO WHERE ROWNUM = 1`
+	// 版本信息查询
+	QueryVersionInfoSqlStr = `SELECT /*+DAMENG_EXPORTER*/ ID_CODE
+      ,BUILD_TYPE
+      ,       TO_NUMBER(SUBSTR(VER,1,2),'XX')
+       ||'.'||TO_NUMBER(SUBSTR(VER,3,2),'XX')
+       ||'.'||TO_NUMBER(SUBSTR(VER,5,2),'XX')
+       ||'.'||TO_NUMBER(SUBSTR(VER,7,2),'XX') AS INNER_VER
+  FROM (SELECT DECODE(SUBSTR(VER,1,2),'03','企业版','05','安全版','02','标准版','其他') AS BUILD_TYPE
+              ,RAWTOHEX(CAST(SUBSTR(VER,3) AS INT)) AS VER
+          FROM (SELECT REGEXP_SUBSTR(ID_CODE,'[^-]+',1,1) AS VER)
+       )`
+	// 检查V$ARCH_SEND_INFO视图中的特定字段是否存在
+	QueryArchSendInfoFieldsExist = "SELECT COUNT(*) FROM V$DYNAMIC_TABLE_COLUMNS WHERE TABNAME = 'V$ARCH_SEND_INFO' AND COLNAME IN ('LAST_SEND_CODE','LAST_SEND_DESC')"
 )

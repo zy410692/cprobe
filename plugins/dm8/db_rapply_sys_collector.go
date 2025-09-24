@@ -3,9 +3,9 @@ package dm8
 import (
 	"context"
 	"database/sql"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 // 定义数据结构
@@ -47,16 +47,6 @@ func (c *DbRapplySysCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DbRapplySysCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time: %vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
@@ -64,7 +54,7 @@ func (c *DbRapplySysCollector) Collect(ch chan<- prometheus.Metric) {
 	// 执行查询
 	rows, err := c.db.QueryContext(ctx, QueryStandbyInfoSql)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryStandbyInfoSql, err)
 		return
 	}
 	defer rows.Close()
@@ -73,7 +63,7 @@ func (c *DbRapplySysCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info RapplySysInfo
 		if err := rows.Scan(&info.TaskMemUsed, &info.TaskNum); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryStandbyInfoSql] Error scanning row has error: %s", err)
 			continue
 		}
 		rapplySysInfos = append(rapplySysInfos, info)
@@ -83,19 +73,18 @@ func (c *DbRapplySysCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	hostname := Hostname
 	for _, info := range rapplySysInfos {
 		ch <- prometheus.MustNewConstMetric(
 			c.taskMemUsedDesc,
 			prometheus.GaugeValue,
 			NullFloat64ToFloat64(info.TaskMemUsed),
-			hostname,
+			Hostname,
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.taskNumDesc,
 			prometheus.GaugeValue,
 			NullFloat64ToFloat64(info.TaskNum),
-			hostname,
+			Hostname,
 		)
 	}
 }

@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // DBInstanceInfo 结构体，用于存储 SQL 查询结果
@@ -82,17 +80,6 @@ func (c *DmapProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect 方法
 func (c *DmapProcessCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	// 获取数据库实例信息
 	dbInstanceInfo, err := c.getDbInstanceInfo()
@@ -115,36 +102,30 @@ func (c *DmapProcessCollector) Collect(ch chan<- prometheus.Metric) {
 	//c.mutex.Unlock()
 
 	// 检查各个进程
-	hostname, _ := os.Hostname()
 	ch <- prometheus.MustNewConstMetric(
 		c.dmapProcessDesc,
 		prometheus.GaugeValue,
 		checkProcess(c.localInstallBinPath, dbInstanceInfo.PID, "dmap"),
-		hostname,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.dmserverProcessDesc,
 		prometheus.GaugeValue,
 		checkProcess(c.localInstallBinPath, dbInstanceInfo.PID, "dmserver"),
-		hostname,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.dmwatcherProcessDesc,
 		prometheus.GaugeValue,
 		checkProcess(c.localInstallBinPath, dbInstanceInfo.PID, "dmwatcher"),
-		hostname,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.dmmonitorProcessDesc,
 		prometheus.GaugeValue,
 		checkProcess(c.localInstallBinPath, dbInstanceInfo.PID, "dmmonitor"),
-		hostname,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.dmagentProcessDesc,
 		prometheus.GaugeValue,
 		checkProcess(c.localInstallBinPath, dbInstanceInfo.PID, "dmagent"),
-		hostname,
 	)
 
 }
@@ -202,7 +183,7 @@ func (c *DmapProcessCollector) getDbInstanceInfo() (DBInstanceInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	logger.Infof("DBInstanceInfo: %v\n", info)
+	//logger.Infof("DBInstanceInfo: %v\n", info)
 	return info, nil
 }
 
@@ -213,7 +194,7 @@ func getLocalInstallBinPath(pid string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logger.Infof("exec %v: %v", fmt.Sprintf("/proc/%s/cwd", pid), string(output))
+	//logger.Infof("exec %v: %v", fmt.Sprintf("/proc/%s/cwd", pid), string(output))
 	procStr := strings.TrimSpace(string(output))
 	lineList := strings.Fields(procStr)
 	lastElement := lineList[len(lineList)-1]

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 const (
@@ -15,9 +14,18 @@ const (
 	DB_ARCH_INVALID   = 2
 )
 
+// DbArchStatusInfo 归档状态信息
+type DbArchStatusInfo struct {
+	archType   sql.NullString
+	archDest   sql.NullString
+	archSrc    sql.NullString
+	archStatus sql.NullFloat64
+}
+
 type DbArchStatusCollector struct {
 	db             *sql.DB
 	archStatusDesc *prometheus.Desc
+	archStatusInfo *prometheus.Desc // 归档所有状态
 	config         *Config
 }
 
@@ -25,6 +33,12 @@ func NewDbArchStatusCollector(db *sql.DB, config *Config) MetricCollector {
 	return &DbArchStatusCollector{
 		db:     db,
 		config: config,
+		archStatusInfo: prometheus.NewDesc(
+			dmdbms_arch_status_info,
+			"Information about DM database archive status, value info: vaild = 1,invaild = 0",
+			[]string{"arch_type", "arch_dest", "arch_src"},
+			nil,
+		),
 		archStatusDesc: prometheus.NewDesc(
 			dmdbms_arch_status,
 			"Information about DM database archive status",
@@ -36,15 +50,16 @@ func NewDbArchStatusCollector(db *sql.DB, config *Config) MetricCollector {
 
 func (c *DbArchStatusCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.archStatusDesc
+	ch <- c.archStatusInfo
 }
 
 func (c *DbArchStatusCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
+	//funcStart := time.Now()
+	//// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
+	//defer func() {
+	//	duration := time.Since(funcStart)
+	//	logger.Infof("func exec time：%vms", duration.Milliseconds())
+	//}()
 
 	if err := c.db.Ping(); err != nil {
 		logger.Errorf("Database connection is not available: %v", err)
@@ -62,6 +77,28 @@ func (c *DbArchStatusCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	setArchMetric(ch, c.archStatusDesc, dbArchStatus)
+	// 如果归档开启，查询所有归档的状态信息
+	if dbArchStatus == DB_ARCH_VALID {
+		dbArchStatusInfos, err := c.getDbArchStatusInfo(ctx, c.db)
+		if err != nil {
+			logger.Errorf(fmt.Sprintf("exec getDbArchStatusInfo func error"), c.archStatusDesc.String())
+			return
+		}
+
+		for _, dbArchStatusInfo := range dbArchStatusInfos {
+			archType := NullStringToString(dbArchStatusInfo.archType)
+			archDest := NullStringToString(dbArchStatusInfo.archDest)
+			archSrc := NullStringToString(dbArchStatusInfo.archSrc)
+			archStatus := NullFloat64ToFloat64(dbArchStatusInfo.archStatus)
+
+			ch <- prometheus.MustNewConstMetric(
+				c.archStatusInfo,
+				prometheus.GaugeValue,
+				archStatus,
+				archType, archDest, archSrc,
+			)
+		}
+	}
 }
 
 // 辅助函数：设置指标
@@ -106,4 +143,31 @@ func getDbArchStatus(ctx context.Context, db *sql.DB) (int, error) {
 
 	logger.Infof("Check Database Arch Status Info Success")
 	return DB_ARCH_INVALID, nil
+}
+
+// getDbArchStatusInfo 查询归档的所有状态信息
+func (c *DbArchStatusCollector) getDbArchStatusInfo(ctx context.Context, db *sql.DB) ([]DbArchStatusInfo, error) {
+	var dbArchStatusInfos []DbArchStatusInfo
+	rows, err := db.QueryContext(ctx, QueryArchiveSendStatusSql)
+	if err != nil {
+		logger.Errorf("exec QueryArchiveSendStatus func error: %s,SQL: %s", err, QueryArchiveSendStatusSql)
+		return dbArchStatusInfos, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var dbArchStatusInfo DbArchStatusInfo
+		if err := rows.Scan(&dbArchStatusInfo.archStatus, &dbArchStatusInfo.archType,
+			&dbArchStatusInfo.archDest, &dbArchStatusInfo.archSrc); err != nil {
+			logger.Errorf("dm8: [getDbArchStatusInfo] Error scanning row")
+			continue
+		}
+		dbArchStatusInfos = append(dbArchStatusInfos, dbArchStatusInfo)
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf(fmt.Sprintf("dm8: [getDbArchStatusInfo] Error with rows"))
+	}
+
+	return dbArchStatusInfos, nil
 }

@@ -3,10 +3,11 @@ package dm8
 import (
 	"context"
 	"database/sql"
-	"github.com/cprobe/cprobe/lib/logger"
-	"github.com/prometheus/client_golang/prometheus"
 	"strconv"
 	"time"
+
+	"github.com/cprobe/cprobe/lib/logger"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type DBInstanceRunningInfoCollector struct {
@@ -44,13 +45,13 @@ func NewDBInstanceRunningInfoCollector(db *sql.DB, config *Config) MetricCollect
 		),
 		statusDesc: prometheus.NewDesc(
 			dmdbms_status_info,
-			"Database status",
+			"Database status, value info: open = 1,mount = 2,suspend = 3 ,other = 4",
 			[]string{"host_name"}, // 添加标签
 			nil,
 		),
 		modeDesc: prometheus.NewDesc(
 			dmdbms_mode_info,
-			"Database mode",
+			"Database mode, value info: primary = 1,normal = 2,standby = 3 ,other = 4",
 			[]string{"host_name"}, // 添加标签
 			nil,
 		),
@@ -74,17 +75,17 @@ func NewDBInstanceRunningInfoCollector(db *sql.DB, config *Config) MetricCollect
 		),
 		statusOccursDesc: prometheus.NewDesc( //这个是数据库状态切换的标识  OPEN
 			dmdbms_db_status_occurs,
-			"status changes status, error is 0 , true is 1",
+			"status changes status, value info: false is 0 , true is 1",
 			[]string{"host_name"}, // 添加标签
 			nil,
 		),
-		switchingOccursDesc: prometheus.NewDesc( //这个是集群切换的标识
+		switchingOccursDesc: prometheus.NewDesc(
 			dmdbms_switching_occurs,
-			"Database instance switching occurs， error is 0 , true is 1  ",
+			"Database instance switching occurs， value info:  error is 0 , true is 1  ",
 			[]string{"host_name"}, // 添加标签
 			nil,
 		),
-		dbStartDayDesc: prometheus.NewDesc( //这个是集群切换的标识
+		dbStartDayDesc: prometheus.NewDesc(
 			dmdbms_start_day,
 			"Database instance start_day ",
 			[]string{"host_name"}, // 添加标签
@@ -106,23 +107,13 @@ func (c *DBInstanceRunningInfoCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DBInstanceRunningInfoCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := checkDBConnection(c.db); err != nil {
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryDBInstanceRunningInfoSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryDBInstanceRunningInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -132,7 +123,7 @@ func (c *DBInstanceRunningInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	if rows.Next() {
 		var startTimeStr, statusStr, modeStr, trxNumStr, deadlockNumStr, threadNumStr string
 		if err := rows.Scan(&startTimeStr, &statusStr, &modeStr, &trxNumStr, &deadlockNumStr, &threadNumStr, &dbStartDay); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryDBInstanceRunningInfoSqlStr] Error scanning row has error: %s", err)
 			return
 		}
 		status, _ = strconv.ParseFloat(statusStr, 64)
@@ -141,14 +132,26 @@ func (c *DBInstanceRunningInfoCollector) Collect(ch chan<- prometheus.Metric) {
 		deadlockNum, _ = strconv.ParseFloat(deadlockNumStr, 64)
 		threadNum, _ = strconv.ParseFloat(threadNumStr, 64)
 
-		// 解析时间戳字符串为 time.Time 类型
-		startTime, err := time.Parse("2006-01-02 15:04:05", startTimeStr)
+		// 加载东八区（北京时间）时区
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			logger.Errorf("Error loading time location has error: %s", err)
+		}
+		// 解析时间字符串为 time.Time 类型，并指定东八区时区
+		startTime, err := time.ParseInLocation("2006-01-02 15:04:05", startTimeStr, loc)
 		if err != nil {
 			logger.Errorf("Error parsing start time", err)
-			// 如果转换失败则赋予默认时间值
-			var defaultTime = time.Date(2006, time.January, 1, 0, 0, 0, 0, time.UTC)
-			startTime = defaultTime
+			// 如果转换失败则赋予默认时间值（此处使用东八区）
+			startTime = time.Date(2006, time.January, 1, 0, 0, 0, 0, loc)
 		}
+		/*		// 解析时间戳字符串为 time.Time 类型
+				startTime, err := time.Parse("2006-01-02 15:04:05", startTimeStr)
+				if err != nil {
+					logger.Logger.Error(fmt.Sprintf("[%s] Error parsing start time", c.dataSource), zap.Error(err))
+					// 如果转换失败则赋予默认时间值
+					var defaultTime = time.Date(2006, time.January, 1, 0, 0, 0, 0, loc)
+					startTime = defaultTime
+				}*/
 		// 获取秒级 Unix 时间戳
 		startTimeUnix = startTime.Unix()
 
@@ -207,6 +210,9 @@ func (c *DBInstanceRunningInfoCollector) handleDatabaseModeSwitch(ch chan<- prom
 
 	cachedModeValue, modeExists := GetFromCache(AlarmSwitchStr) //这个key存储的是 mode值
 	switchOccurExists := GetKeyExists(AlarmSwitchOccur)         //这个key表示已经发生切换了，保留的时间
+	// 使用带数据源的缓存键用不到多数据源
+	//switchStrKey := fmt.Sprintf("%s_%s", AlarmSwitchStr, c.dataSource)
+	//switchOccurKey := fmt.Sprintf("%s_%s", AlarmSwitchOccur, c.dataSource)
 
 	switch {
 	case switchOccurExists:

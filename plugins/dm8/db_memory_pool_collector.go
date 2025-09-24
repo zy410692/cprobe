@@ -3,9 +3,9 @@ package dm8
 import (
 	"context"
 	"database/sql"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 type DbMemoryPoolInfoCollector struct {
@@ -47,27 +47,15 @@ func (c *DbMemoryPoolInfoCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DbMemoryPoolInfoCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
 
 	//保存全局结果对象
 	var memoryPoolInfos []MemoryPoolInfo
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryMemoryPoolInfoSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryMemoryPoolInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -75,13 +63,13 @@ func (c *DbMemoryPoolInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info MemoryPoolInfo
 		if err := rows.Scan(&info.ZoneType, &info.CurrVal, &info.ResVal, &info.TotalVal); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryMemoryPoolInfoSqlStr] Error scanning row has error: %s", err)
 			continue
 		}
 		memoryPoolInfos = append(memoryPoolInfos, info)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s", err)
 	}
 	// 发送数据到 Prometheus
 	for _, info := range memoryPoolInfos {

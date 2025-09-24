@@ -17,10 +17,10 @@ func GetOS() string {
 	goos := runtime.GOOS
 	switch strings.ToLower(goos) {
 	case "windows":
-		return "Windows"
+		return OS_WINDOWS
 	case "linux":
 		return OS_LINUX
 	default:
-		return "Unknown"
+		return OS_UNKNOWN
 	}
 }

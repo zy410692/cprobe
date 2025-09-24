@@ -3,9 +3,9 @@ package dm8
 import (
 	"context"
 	"database/sql"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 // 定义数据结构
@@ -40,24 +40,13 @@ func (c *IniParameterCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *IniParameterCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryParameterInfoSql)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryParameterInfoSql, err)
 		return
 	}
 	defer rows.Close()
@@ -66,25 +55,24 @@ func (c *IniParameterCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info IniParameterInfo
 		if err := rows.Scan(&info.ParaName, &info.ParaValue); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("[QueryParameterInfoSql] Error scanning row has error: %s", err)
 			continue
 		}
 		iniParameterInfos = append(iniParameterInfos, info)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s", err)
 		return
 	}
 
 	// 发送数据到 Prometheus
-	hostname := Hostname
 	for _, info := range iniParameterInfos {
 		paramName := NullStringToString(info.ParaName)
 		ch <- prometheus.MustNewConstMetric(
 			c.parameterInfoDesc,
 			prometheus.GaugeValue,
 			NullFloat64ToFloat64(info.ParaValue),
-			hostname, paramName,
+			Hostname, paramName,
 		)
 	}
 }

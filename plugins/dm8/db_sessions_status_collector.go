@@ -3,9 +3,9 @@ package dm8
 import (
 	"context"
 	"database/sql"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 // DBSessionsStatusCollector 结构体
@@ -35,7 +35,7 @@ func NewDBSessionsStatusCollector(db *sql.DB, config *Config) MetricCollector {
 		),
 		sessionPercentageDesc: prometheus.NewDesc(
 			dmdbms_session_percentage,
-			"Number of database sessions type percentage",
+			"Number of database sessions type percentage,method: total/max_session * 100%",
 			[]string{"host_name"},
 			nil,
 		),
@@ -49,27 +49,16 @@ func (c *DBSessionsStatusCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DBSessionsStatusCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
 
 	//保存全局结果对象
 	var sessionsStatusInfos []DBSessionsStatusInfo
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryDBSessionsStatusSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		handleDbQueryErrorWithSQL(QueryDBSessionsStatusSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -77,13 +66,13 @@ func (c *DBSessionsStatusCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var info DBSessionsStatusInfo
 		if err := rows.Scan(&info.stateType, &info.countVal); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("Error scanning row has error: %s", err)
 			continue
 		}
 		sessionsStatusInfos = append(sessionsStatusInfos, info)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("Error with rows has error: %s", err)
 	}
 
 	var maxSession float64 = 0

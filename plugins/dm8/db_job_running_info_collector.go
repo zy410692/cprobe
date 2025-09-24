@@ -3,9 +3,10 @@ package dm8
 import (
 	"context"
 	"database/sql"
+	"strings"
+
 	"github.com/cprobe/cprobe/lib/logger"
 	"github.com/prometheus/client_golang/prometheus"
-	"time"
 )
 
 type DbJobRunningInfoCollector struct {
@@ -37,24 +38,18 @@ func (c *DbJobRunningInfoCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *DbJobRunningInfoCollector) Collect(ch chan<- prometheus.Metric) {
-	funcStart := time.Now()
-	// 时间间隔的计算发生在 defer 语句执行时，确保能够获取到正确的函数执行时间。
-	defer func() {
-		duration := time.Since(funcStart)
-		logger.Infof("func exec time：%vms", duration.Milliseconds())
-	}()
-
-	if err := c.db.Ping(); err != nil {
-		logger.Errorf("Database connection is not available: %v", err)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.QueryTimeout)
 	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, QueryDbJobRunningInfoSqlStr)
 	if err != nil {
-		handleDbQueryError(err)
+		// 检查报错信息中是否包含 "v$dmmonitor" 字符串
+		if strings.Contains(err.Error(), "SYSJOB") {
+			logger.Warnf("[%s] 数据库未开启定时任务功能，无法检查错误任务异常数量。请执行sql语句call SP_INIT_JOB_SYS(1); 开启定时作业的功能。（该报错不影响其他指标采集数据,也可忽略）", QueryDbJobRunningInfoSqlStr)
+			return
+		}
+		handleDbQueryErrorWithSQL(QueryDbJobRunningInfoSqlStr, err)
 		return
 	}
 	defer rows.Close()
@@ -63,13 +58,13 @@ func (c *DbJobRunningInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	var errorCountInfo ErrorCountInfo
 	if rows.Next() {
 		if err := rows.Scan(&errorCountInfo.ErrorNum); err != nil {
-			logger.Errorf("Error scanning row", err)
+			logger.Errorf("Error scanning row has error: %s", err)
 			return
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error with rows", err)
+		logger.Errorf("[%s] Error with rows", err)
 	}
 	// 发送数据到 Prometheus
 
